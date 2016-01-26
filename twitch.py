@@ -37,7 +37,8 @@ twitch_settings_default = {
 }
 twitch_settings = {}
 buffers = {}
-username = ''
+user = {'name': '', 'color': 'chat', 'display_name': ''}
+users = {}
 
 import_ok = True
 
@@ -67,18 +68,25 @@ def parse_tags(tags_string):
         value = value.replace('\\\\', '\\')
         value = value or None
         tags[key] = value
-    return tags
+    user_tags = {
+        'name': tags['display-name'].lower(),
+        'color': rgb2short(tags['color']),
+        'display_name': tags['display-name']
+    }
+    return tags, user_tags
 
 
 def get_buffer(nick, overwrite_name=False):
     """Get the buffer for a nick or create it if it doesn't exist"""
     buffer = buffers.get(nick.lower())
+    display_name = users.get(nick, {'display_name': nick})['display_name']
     if buffer is None:
-        buffer = weechat.buffer_new('TWITCH-WHISPER.' + nick,
-                                    'handle_whisper_buffer_input', nick,
-                                    'handle_whisper_buffer_close', nick)
+        buffer = weechat.buffer_new(
+            'TWITCH-WHISPER.' + display_name,
+            'handle_whisper_buffer_input', display_name,
+            'handle_whisper_buffer_close', display_name)
         weechat.buffer_set(buffer, 'short_name', nick)
-        buffers[nick] = buffer
+        buffers[nick.lower()] = buffer
     elif overwrite_name:
         weechat.buffer_set(buffer, 'short_name', nick)
     return buffer
@@ -95,7 +103,7 @@ def handle_whisper_buffer_input(data, buffer, input_data):
     weechat.command('',
                     '/msg -server {} jtv .w {} {}'.format(
                         twitch_settings['group_server'], data, input_data))
-    weechat.prnt(buffer, username + '\t' + input_data)
+    weechat.prnt(buffer, user['name'] + '\t' + input_data)
     current = weechat.current_buffer()
     italic = weechat.color('/chat')
     if buffer != current:
@@ -110,20 +118,54 @@ def handle_whisper(data, modifier, modifier_data, string):
         return string
     parsed = weechat.info_get_hashtable('irc_message_parse',
                                         {"message": string})
-    tags = parse_tags(parsed['tags'])
+    tags, user_tags = parse_tags(parsed['tags'])
+    nick = parsed['nick']
+    users[nick] = user_tags
     msg = parsed['text']
-    user = tags['display-name']
-    buffer = get_buffer(user, True)
-    italic = weechat.color('/' + rgb2short(tags['color']))
-    color = weechat.color(rgb2short(tags['color']))
+    display_name = tags['display-name']
+    buffer = get_buffer(display_name, True)
+    italic = weechat.color('/' + users[nick]['color'])
+    color = weechat.color(users[nick]['color'])
     default_color = weechat.color('chat')
     weechat.prnt_date_tags(
         buffer, int(time.time()), 'notify_private',
-        '{}{}{}\t{}'.format(color, user, default_color, msg))
+        '{}{}{}\t{}'.format(color, users[nick]['display_name'], default_color,
+                            msg))
     current = weechat.current_buffer()
     if buffer != current:
-        weechat.prnt(current, '{}{} whispers: {}'.format(italic, user, msg))
+        weechat.prnt(current, '{}{} whispers: {}'.format(italic,
+                     users[nick]['display_name'], msg))
     # Return '' so WeeChat doesn't get all confused trying to parse a whisper
+    return ''
+
+
+def handle_globaluserstate(data, modifier, modifier_data, string):
+    """Handles a GLOBALUSERSTATE"""
+    if modifier_data not in (twitch_settings['twitch_server'],
+                             twitch_settings['group_server']):
+        return string
+    parsed = weechat.info_get_hashtable('irc_message_parse',
+                                        {"message": string})
+    user = parse_tags(parsed['tags'])[1]
+    return ''
+
+
+def handle_userstate(data, modifier, modifier_data, string):
+    """Handles a USERSTATE"""
+    if modifier_data not in (twitch_settings['twitch_server'],
+                             twitch_settings['group_server']):
+        return string
+    parsed = weechat.info_get_hashtable('irc_message_parse',
+                                        {"message": string})
+    user = parse_tags(parsed['tags'])[1]
+    return ''
+
+
+def handle_roomstate(data, modifier, modifier_data, string):
+    """Handles a ROOMSTATE"""
+    if modifier_data not in (twitch_settings['twitch_server'],
+                             twitch_settings['group_server']):
+        return string
     return ''
 
 
@@ -137,13 +179,32 @@ def handle_config_change(data, option, value):
     return weechat.WEECHAT_RC_OK
 
 
-def handle_w_command(data, buffer, args):
-    """Handles a /w command"""
+def handle_whisper_command(data, buffer, args):
+    """Handles a /whisper command"""
     split = args.split(' ', 1)
     if len(split) < 2:
         return weechat.WEECHAT_RC_ERROR
     buffer = get_buffer(split[0])
     return handle_whisper_buffer_input(split[0], buffer, split[1])
+
+
+def handle_w_command(data, buffer, args):
+    """Handles a /w command"""
+    server = weechat.buffer_get_string(buffer, 'localvar_server')
+    if server in (twitch_settings['twitch_server'],
+                  twitch_settings['group_server']):
+        return handle_whisper_command(data, buffer, args)
+    else:
+        return weechat.command(buffer, '/who ' + args)
+
+
+def handle_irc_out1_pass(data, modifier, modifier_data, string):
+    """Handle an outgoing PASS message"""
+    if modifier_data in (twitch_settings['twitch_server'],
+                         twitch_settings['group_server']):
+        return ('CAP REQ :twitch.tv/commands twitch.tv/tags '
+                'twitch.tv/membership\r\n' + string)
+    return string
 
 if __name__ == '__main__' and import_ok:
     if weechat.register(SCRIPT_NAME, SCRIPT_AUTHOR, SCRIPT_VERSION,
@@ -160,21 +221,46 @@ if __name__ == '__main__' and import_ok:
                 weechat.config_set_desc_plugin(
                     option,
                     value[1] + ' ( default: ' + value[0] + ')')
-        username = weechat.config_string(weechat.config_get(
-            'irc.server.' + twitch_settings['group_server'] + '.username'))
+        user['name'] = weechat.config_string(weechat.config_get(
+            'irc.server.' + twitch_settings['group_server'] + '.nicks'))
+        user['display_name'] = user['name']
+        user['color'] = weechat.config_string(
+            weechat.config_get('weechat.color.chat_nick_self'))
 
         # Detect config changes
         weechat.hook_config('plugins.var.python.' + SCRIPT_NAME + '.*',
                             'handle_config_change', '')
 
         weechat.hook_modifier('irc_in_whisper', 'handle_whisper', '')
-        weechat.hook_command('3000|w',
+        weechat.hook_modifier('irc_in_globaluserstate',
+                              'handle_globaluserstate', '')
+        weechat.hook_modifier('irc_in_userstate', 'handle_userstate', '')
+        weechat.hook_modifier('irc_in_roomstate', 'handle_roomstate', '')
+        weechat.hook_command('3000|whisper',
                              'Send a Twitch.TV whisper to a user',
-                             '[user] [message]',
-                             'Send [message] to [user]',
-                             '%(nick)',
+                             '<user> <message>',
+                             '   user: Send to this user\n'
+                             'message: Send this message',
+                             '%(irc_server_nicks)',
+                             'handle_whisper_command',
+                             '')
+        weechat.hook_command('whisper_check_server',
+                             'Send a Twitch.TV whisper to a user only if run '
+                             ' from a Twitch.TV server, else /who - use /w '
+                             'instead. See /help whisper',
+                             '<user> <message> || [<mask> [o]]',
+                             '   user: Send to this user\n'
+                             'message: Send this message\n'
+                             '   mask: Query only information which match this'
+                             ' mask\n'
+                             '      o: Only operators are returned according '
+                             'to the mask supplied',
+                             '%(irc_server_nicks)',
                              'handle_w_command',
                              '')
+        weechat.command('', '/alias del w')
+        weechat.command('', '/alias add w /whisper_check_server')
+        weechat.hook_modifier('irc_out1_pass', 'handle_irc_out1_pass', '')
 
 # This look-up table and the rgb2short function were taken from Micah Elliott
 # at https://gist.github.com/MicahElliott/719710 and modified slightly
