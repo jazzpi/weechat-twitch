@@ -39,6 +39,7 @@ twitch_settings = {}
 buffers = {}
 user = {'name': '', 'color': 'chat', 'display_name': ''}
 users = {}
+colored_messages = {}
 
 import_ok = True
 
@@ -55,12 +56,31 @@ except:
     import_ok = False
 
 
+def get_name(nick):
+    """Get the best guess at a user's name we have"""
+    user = users.get(nick.lower(), {'display_name': nick})
+    display_name = user['display_name']
+    if display_name == '':
+        display_name = user['name']
+    if display_name == '':
+        display_name = nick
+    return display_name
+
+
 def parse_tags(tags_string):
     """Parse IRCv3 tags as used by Twitch.TV"""
-    split = tags_string.split(';')
+    if tags_string == '':
+        return {}, {}
     tags = {}
+    user_tags = {'display_name': '', 'name': '', 'color': 'chat'}
+    split = tags_string.split(';')
     for i, tag in enumerate(split):
-        key, value = tag.split('=', 1)
+        split2 = tag.split('=', 1)
+        if len(split2) == 1:
+            if split2 != '':
+                tags[split2[0]] = True
+            continue
+        key, value = split2
         value = value.replace('\\:', ';')
         value = value.replace('\\s', ' ')
         value = value.replace('\\n', '\n')
@@ -68,33 +88,73 @@ def parse_tags(tags_string):
         value = value.replace('\\\\', '\\')
         value = value or None
         tags[key] = value
-    user_tags = {
-        'name': tags['display-name'].lower(),
-        'color': rgb2short(tags['color']),
-        'display_name': tags['display-name']
-    }
+    if 'display-name' in tags:
+        user_tags['display_name'] = tags['display-name']
+        user_tags['name'] = tags['display-name'].lower()
+    if 'color' in tags and tags['color'] is not None:
+        user_tags['color'] = rgb2short(tags['color'])
     return tags, user_tags
 
 
 def get_buffer(nick, overwrite_name=False):
     """Get the buffer for a nick or create it if it doesn't exist"""
     buffer = buffers.get(nick.lower())
-    display_name = users.get(nick, {'display_name': nick})['display_name']
+    name = get_name(nick)
     if buffer is None:
         buffer = weechat.buffer_new(
-            'TWITCH-WHISPER.' + display_name,
-            'handle_whisper_buffer_input', display_name,
-            'handle_whisper_buffer_close', display_name)
-        weechat.buffer_set(buffer, 'short_name', nick)
+            'TWITCH-WHISPER.' + name,
+            'handle_whisper_buffer_input', name,
+            'handle_whisper_buffer_close', name)
+        weechat.buffer_set(buffer, 'short_name', name)
         buffers[nick.lower()] = buffer
     elif overwrite_name:
         weechat.buffer_set(buffer, 'short_name', nick)
     return buffer
 
 
+def get_nick_colors_forced():
+    """Get all colors forced for nicks"""
+    option = weechat.config_string(
+        weechat.config_get('irc.look.nick_color_force'))
+    if option == '':
+        return {}
+    return dict(map(lambda x: x.split(':'), option.split(';')))
+
+
+def get_nick_color_forced(nick):
+    """Get the color forced for a nick (/set irc.look.nick_color_force)"""
+    colors = get_nick_colors_forced()
+    if nick in colors:
+        return colors[nick]
+
+
+def set_nick_colors_forced(colors):
+    """Set all colors forced for nicks"""
+    string = ''
+    for nick, color in colors.items():
+        string += nick + ':' + color + ';'
+    string = string[:-1]  # Remove trailing ;
+    weechat.config_option_set(
+        weechat.config_get('irc.look.nick_color_force'), string, 1)
+
+
+def set_nick_color_force(nick, color):
+    """Force a color for a nick (/set irc.look.nick_color_force)"""
+    colors = get_nick_colors_forced()
+    colors[nick] = color
+    set_nick_colors_forced(colors)
+
+
+def del_nick_color_force(nick):
+    """Remove a forced color for a nick (/set irc.look.nick_color_force)"""
+    colors = get_nick_colors_forced()
+    colors.pop(nick)
+    set_nick_colors_forced(colors)
+
+
 def handle_whisper_buffer_close(data, buffer):
     """Handles a closing buffer for a nick (data)."""
-    buffers.pop(data)
+    buffers.pop(data.lower())
     return weechat.WEECHAT_RC_OK
 
 
@@ -107,7 +167,8 @@ def handle_whisper_buffer_input(data, buffer, input_data):
     current = weechat.current_buffer()
     italic = weechat.color('/chat')
     if buffer != current:
-        weechat.prnt(current, '{}You whisper to {}: {}'.format(italic, data,
+        name = get_name(data)
+        weechat.prnt(current, '{}You whisper to {}: {}'.format(italic, name,
                                                                input_data))
     return weechat.WEECHAT_RC_OK
 
@@ -121,20 +182,18 @@ def handle_whisper(data, modifier, modifier_data, string):
     tags, user_tags = parse_tags(parsed['tags'])
     nick = parsed['nick']
     users[nick] = user_tags
+    name = get_name(nick)
     msg = parsed['text']
-    display_name = tags['display-name']
-    buffer = get_buffer(display_name, True)
+    buffer = get_buffer(name, True)
     italic = weechat.color('/' + users[nick]['color'])
     color = weechat.color(users[nick]['color'])
     default_color = weechat.color('chat')
     weechat.prnt_date_tags(
         buffer, int(time.time()), 'notify_private',
-        '{}{}{}\t{}'.format(color, users[nick]['display_name'], default_color,
-                            msg))
+        '{}{}{}\t{}'.format(color, name, default_color, msg))
     current = weechat.current_buffer()
     if buffer != current:
-        weechat.prnt(current, '{}{} whispers: {}'.format(italic,
-                     users[nick]['display_name'], msg))
+        weechat.prnt(current, '{}{} whispers: {}'.format(italic, name, msg))
     # Return '' so WeeChat doesn't get all confused trying to parse a whisper
     return ''
 
@@ -167,6 +226,33 @@ def handle_roomstate(data, modifier, modifier_data, string):
                              twitch_settings['group_server']):
         return string
     return ''
+
+
+def handle_privmsg(data, modifier, modifier_data, string):
+    """Handle a PRIVMSG"""
+    if modifier_data != 'twitch':
+        return string
+    parsed = weechat.info_get_hashtable('irc_message_parse',
+                                        {"message": string})
+    tags, user_tags = parse_tags(parsed['tags'])
+    if get_nick_color_forced(parsed['nick'].lower()) is None:
+        colored_messages[parsed['message_without_tags']] = \
+            parsed['nick'].lower()
+        set_nick_color_force(parsed['nick'].lower(), user_tags['color'])
+    users[parsed['nick'].lower()] = user_tags
+    name = get_name(parsed['nick'].lower())
+    return string
+
+
+def handle_privmsg_after(data, signal, signal_data):
+    """Handle a PRIVMSG after it has been processed"""
+    nick = colored_messages.get(signal_data)
+    if nick is not None:
+        del_nick_color_force(nick)
+        colored_messages.pop(signal_data)
+        return weechat.WEECHAT_RC_OK
+    else:
+        return weechat.WEECHAT_RC_ERROR
 
 
 def handle_config_change(data, option, value):
@@ -222,7 +308,8 @@ if __name__ == '__main__' and import_ok:
                     option,
                     value[1] + ' ( default: ' + value[0] + ')')
         user['name'] = weechat.config_string(weechat.config_get(
-            'irc.server.' + twitch_settings['group_server'] + '.nicks'))
+            'irc.server.' + twitch_settings['group_server'] + '.nicks')
+            ).split(',', 1)[0]
         user['display_name'] = user['name']
         user['color'] = weechat.config_string(
             weechat.config_get('weechat.color.chat_nick_self'))
@@ -236,6 +323,13 @@ if __name__ == '__main__' and import_ok:
                               'handle_globaluserstate', '')
         weechat.hook_modifier('irc_in_userstate', 'handle_userstate', '')
         weechat.hook_modifier('irc_in_roomstate', 'handle_roomstate', '')
+        # Doesn't send tags - why? D:
+        # weechat.hook_signal(twitch_settings['twitch_server'] +
+        #                     ',irc_in_privmsg', 'handle_privmsg', '')
+        weechat.hook_modifier('irc_in_privmsg', 'handle_privmsg', 'twitch')
+        weechat.hook_signal(
+            twitch_settings['twitch_server'] + ',irc_in2_privmsg',
+            'handle_privmsg_after', '')
         weechat.hook_command('3000|whisper',
                              'Send a Twitch.TV whisper to a user',
                              '<user> <message>',
