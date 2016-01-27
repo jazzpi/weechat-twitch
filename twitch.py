@@ -97,7 +97,6 @@ user_self = {'name': '', 'color': 'chat', 'display_name': '', 'channels': {}}
 users = {}
 color_messages = {}
 outgoing_messages = []
-message_count = 0
 
 import_ok = True
 
@@ -366,9 +365,6 @@ def handle_irc_out1_privmsg(data, modifier, modifier_data, string):
     if modifier_data != twitch_settings['twitch_server']:
         return string
     global message_count
-    message_count += 1
-    if message_count > 10:
-        return
     try:
         outgoing_messages.remove(string)
     except ValueError:
