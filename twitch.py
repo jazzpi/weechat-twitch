@@ -116,11 +116,11 @@ except:
 
 def get_name(nick):
     """Get the best guess at a user's name we have"""
-    user = users.get(nick.lower(), {'display_name': nick})
-    display_name = user['display_name']
-    if display_name == '':
-        display_name = user['name']
-    if display_name == '':
+    user = users.get(nick.lower(), {})
+    display_name = user.get('display_name')
+    if display_name is None:
+        display_name = user.get('name')
+    if display_name is None:
         display_name = nick
     return display_name
 
@@ -172,7 +172,7 @@ def parse_tags(tags_string):
     if tags_string == '':
         return {}, {}
     tags = {}
-    user_tags = {'display_name': '', 'name': ''}
+    user_tags = {}
     split = tags_string.split(';')
     for i, tag in enumerate(split):
         split2 = tag.split('=', 1)
@@ -188,7 +188,7 @@ def parse_tags(tags_string):
         value = value.replace('\\\\', '\\')
         value = value or None
         tags[key] = value
-    if 'display-name' in tags:
+    if 'display-name' in tags and tags['display-name'] is not None:
         user_tags['display_name'] = tags['display-name']
         user_tags['name'] = tags['display-name'].lower()
     if 'color' in tags and tags['color'] is not None:
@@ -223,13 +223,13 @@ def prnt_message(channel, nick, message):
     user = users[nick]
     prefix = prefix_for_user(channel, user)
     color = user.get('color')
+    name = get_name(nick)
     if color is None:
-        color = weechat.info_get('irc_nick_color_name', user['display_name'])
+        color = weechat.info_get('irc_nick_color_name', name)
     buffer = weechat.info_get('irc_buffer', twitch_settings['twitch_server'] +
                               ',' + channel)
     full_message = '{}{}{}{}\t{}'.format(
-        prefix, weechat.color(color), user['display_name'],
-        weechat.color('chat'), message)
+        prefix, weechat.color(color), name, weechat.color('chat'), message)
     weechat.prnt_date_tags(
         buffer, 0, 'irc_privmsg,notify_message,prefix_nick_{0},nick_{1},'
         'host_{1}@{1}.tmi.twitch.tv,log1'.format(color, nick),
