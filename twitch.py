@@ -169,7 +169,7 @@ def update_user(nick, user_tags, channel='', channel_tags={}):
 def parse_tags(tags_string):
     """Parse IRCv3 tags as used by Twitch.TV"""
     if tags_string == '':
-        return {}, {}
+        return {}, {}, {}
     tags = {}
     user_tags = {}
     split = tags_string.split(';')
