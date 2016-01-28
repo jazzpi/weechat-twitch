@@ -291,7 +291,7 @@ def handle_globaluserstate(data, modifier, modifier_data, string):
     parsed = weechat.info_get_hashtable('irc_message_parse',
                                         {"message": string})
     # All we're interested in are user tags
-    update_user(users_self['name'], parse_tags(parsed['tags'])[1])
+    update_user(user_self['name'], parse_tags(parsed['tags'])[1])
     return ''
 
 
